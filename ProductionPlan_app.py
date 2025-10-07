@@ -622,6 +622,7 @@ with col1:
                             wI_raw
                         )
                         st.session_state['result_df'] = result_df
+                        st.session_state['original_result_df'] = result_df.copy()  # 元のデータを保存
                         st.session_state['status'] = status
                         st.session_state['shortfall'] = shortfall
                         st.session_state['used_alpha_C'] = st.session_state.alpha_C
@@ -629,6 +630,9 @@ with col1:
                         st.session_state['used_alpha_I'] = st.session_state.alpha_I
                         st.session_state['used_wS_raw'] = wS_raw.copy()
                         st.session_state['used_wI_raw'] = wI_raw.copy()
+                        # 編集用データフレームもリセット
+                        if 'edited_result_df' in st.session_state:
+                            del st.session_state['edited_result_df']
                         st.success("✅ 最適化完了!")
                     except Exception as e:
                         st.error(f"❌ エラーが発生しました: {str(e)}")
@@ -667,7 +671,7 @@ with col2:
             st.metric("総不足量", f"{st.session_state['shortfall']:.2f} t")
         
         # タブで結果を切り替え
-        tab1, tab2 = st.tabs(["📈 時系列グラフ", "📊 日別集計"])
+        tab1, tab2, tab3 = st.tabs(["📈 時系列グラフ", "📊 日別集計", "✏️ 稼働状態編集"])
         
         with tab1:
             # グラフ表示
@@ -771,6 +775,163 @@ with col2:
                 file_name="daily_summary.csv",
                 mime="text/csv"
             )
+        
+        with tab3:
+            st.subheader("✏️ 稼働状態の編集")
+            
+            # 編集用データの初期化
+            if 'edited_result_df' not in st.session_state:
+                st.session_state['edited_result_df'] = st.session_state['result_df'].copy()
+            
+            edited_df = st.session_state['edited_result_df'].copy()
+            
+            # 日付選択
+            edited_df['date'] = pd.to_datetime(edited_df['time']).dt.date
+            available_dates = sorted(edited_df['date'].unique())
+            
+            selected_date = st.selectbox(
+                "編集する日付を選択",
+                options=available_dates,
+                format_func=lambda x: str(x)
+            )
+            
+            # 選択した日付のデータをフィルタ
+            date_data = edited_df[edited_df['date'] == selected_date].copy()
+            date_data = date_data.sort_values('time').reset_index(drop=True)
+            
+            st.write(f"**{selected_date} の稼働状態編集**")
+            
+            # 編集可能なデータフレームを作成
+            display_columns = ['time', 'x_DG', 'x_EF', 'y_C_m', 'y_S_m', 'y_I_m']
+            edit_data = date_data[display_columns].copy()
+            edit_data.columns = ['時刻', 'DG坑採掘量(t/h)', 'EF坑採掘量(t/h)', 
+                                 'セメントベルト(t/h)', '砕石ベルト(t/h)', '鉄鋼ベルト(t/h)']
+            
+            # データエディタで編集
+            edited_table = st.data_editor(
+                edit_data,
+                use_container_width=True,
+                height=600,
+                column_config={
+                    "時刻": st.column_config.DatetimeColumn(
+                        "時刻",
+                        format="YYYY-MM-DD HH:mm",
+                        disabled=True
+                    ),
+                    "DG坑採掘量(t/h)": st.column_config.NumberColumn(
+                        "DG坑採掘量(t/h)",
+                        min_value=0,
+                        max_value=1000,
+                        step=1,
+                        format="%.2f"
+                    ),
+                    "EF坑採掘量(t/h)": st.column_config.NumberColumn(
+                        "EF坑採掘量(t/h)",
+                        min_value=0,
+                        max_value=1000,
+                        step=1,
+                        format="%.2f"
+                    ),
+                    "セメントベルト(t/h)": st.column_config.NumberColumn(
+                        "セメントベルト(t/h)",
+                        min_value=0,
+                        max_value=2000,
+                        step=1,
+                        format="%.2f"
+                    ),
+                    "砕石ベルト(t/h)": st.column_config.NumberColumn(
+                        "砕石ベルト(t/h)",
+                        min_value=0,
+                        max_value=2000,
+                        step=1,
+                        format="%.2f"
+                    ),
+                    "鉄鋼ベルト(t/h)": st.column_config.NumberColumn(
+                        "鉄鋼ベルト(t/h)",
+                        min_value=0,
+                        max_value=2000,
+                        step=1,
+                        format="%.2f"
+                    )
+                },
+                hide_index=True
+            )
+            
+            # 適用ボタン
+            col_apply, col_reset = st.columns(2)
+            
+            with col_apply:
+                if st.button("✅ 変更を適用", type="primary", key="apply_edit"):
+                    # 編集したデータを元のデータフレームに反映
+                    for idx, row in date_data.iterrows():
+                        time_val = row['time']
+                        table_idx = date_data[date_data['time'] == time_val].index[0]
+                        
+                        edited_df.loc[edited_df['time'] == time_val, 'x_DG'] = edited_table.iloc[table_idx]['DG坑採掘量(t/h)']
+                        edited_df.loc[edited_df['time'] == time_val, 'x_EF'] = edited_table.iloc[table_idx]['EF坑採掘量(t/h)']
+                        edited_df.loc[edited_df['time'] == time_val, 'y_C_m'] = edited_table.iloc[table_idx]['セメントベルト(t/h)']
+                        edited_df.loc[edited_df['time'] == time_val, 'y_S_m'] = edited_table.iloc[table_idx]['砕石ベルト(t/h)']
+                        edited_df.loc[edited_df['time'] == time_val, 'y_I_m'] = edited_table.iloc[table_idx]['鉄鋼ベルト(t/h)']
+                    
+                    st.session_state['edited_result_df'] = edited_df
+                    st.session_state['result_df'] = edited_df.drop(columns=['date'])
+                    st.success("✅ 変更を適用しました")
+                    st.rerun()
+            
+            with col_reset:
+                if st.button("🔄 元に戻す", key="reset_edit"):
+                    # 最適化結果に戻す
+                    if 'original_result_df' in st.session_state:
+                        st.session_state['result_df'] = st.session_state['original_result_df'].copy()
+                        st.session_state['edited_result_df'] = st.session_state['original_result_df'].copy()
+                        st.success("🔄 最適化結果に戻しました")
+                        st.rerun()
+            
+            # プレビューグラフ
+            st.subheader("📊 編集後のプレビュー")
+            preview_df = st.session_state['edited_result_df'].copy()
+            
+            fig_preview = make_subplots(
+                rows=2, cols=1,
+                subplot_titles=("坑道採掘量", "ベルト搬送量"),
+                vertical_spacing=0.15
+            )
+            
+            # 坑道採掘量
+            fig_preview.add_trace(
+                go.Scatter(x=preview_df['time'], y=preview_df['x_DG'], 
+                          name='DG坑', line=dict(color='blue')),
+                row=1, col=1
+            )
+            fig_preview.add_trace(
+                go.Scatter(x=preview_df['time'], y=preview_df['x_EF'], 
+                          name='EF坑', line=dict(color='green')),
+                row=1, col=1
+            )
+            
+            # ベルト搬送量
+            fig_preview.add_trace(
+                go.Scatter(x=preview_df['time'], y=preview_df['y_C_m'], 
+                          name='セメント', line=dict(color='red')),
+                row=2, col=1
+            )
+            fig_preview.add_trace(
+                go.Scatter(x=preview_df['time'], y=preview_df['y_S_m'], 
+                          name='砕石', line=dict(color='orange')),
+                row=2, col=1
+            )
+            fig_preview.add_trace(
+                go.Scatter(x=preview_df['time'], y=preview_df['y_I_m'], 
+                          name='鉄鋼', line=dict(color='purple')),
+                row=2, col=1
+            )
+            
+            fig_preview.update_xaxes(title_text="時刻", row=2, col=1)
+            fig_preview.update_yaxes(title_text="採掘量 (t/h)", row=1, col=1)
+            fig_preview.update_yaxes(title_text="搬送量 (t/h)", row=2, col=1)
+            fig_preview.update_layout(height=800, showlegend=True)
+            
+            st.plotly_chart(fig_preview, use_container_width=True)
         
         # 結果データのダウンロード
         csv = st.session_state['result_df'].to_csv(index=False, encoding="utf-8")
