@@ -124,7 +124,7 @@ def solve_optimization(df, alpha_C, alpha_S, alpha_I, wS_raw, wI_raw):
         m += S_Y["S_m"][t] <= K_Y["S_m"]
         m += S_Y["I_m"][t] <= K_Y["I_m"]
     
-    # ベルト能力 + 停止
+    # ベルト能力 + 同時停止
     for t in T:
         m += y["C_m"][t] + y["S_m"][t] + y["I_m"][t] <= B * workB[t]
         m += y["C_m"][t] <= B * z["C_m"][t]
@@ -194,6 +194,7 @@ def solve_optimization(df, alpha_C, alpha_S, alpha_I, wS_raw, wI_raw):
             "S_Y_C_m": S_Y["C_m"][t].value() or 0.0,
             "S_Y_S_m": S_Y["S_m"][t].value() or 0.0,
             "S_Y_I_m": S_Y["I_m"][t].value() or 0.0,
+            "S_P_cement": S_P["cement"][t].value() or 0.0,
         }
         rows.append(row)
     
@@ -218,7 +219,7 @@ def plot_results(result_df):
     result_df['S_working'] = (result_df['y_S_m'] > 0).astype(int)
     result_df['I_working'] = (result_df['y_I_m'] > 0).astype(int)
     
-    # 1日分の範囲を計算（最初の24時間）
+    # 1日分の範囲を計算(最初の24時間)
     start_time = result_df["time"].min()
     end_time = start_time + pd.Timedelta(hours=24)
     
@@ -303,7 +304,7 @@ def plot_results(result_df):
         row=3, col=1
     )
     
-    # 坑道稼働状態グラフの設定（1日分表示、スクロールバー付き）
+    # 坑道稼働状態グラフの設定(1日分表示、スクロールバー付き)
     fig.update_xaxes(
         row=1, col=1,
         range=[start_time, end_time],
@@ -318,7 +319,7 @@ def plot_results(result_df):
         ticktext=['EF坑', 'DG坑']
     )
     
-    # ベルト稼働状態グラフの設定（1日分表示、スクロールバー付き）
+    # ベルト稼働状態グラフの設定(1日分表示、スクロールバー付き)
     fig.update_xaxes(
         row=2, col=1,
         range=[start_time, end_time],
@@ -333,7 +334,7 @@ def plot_results(result_df):
         ticktext=['鉄鋼', '砕石', 'セメント']
     )
     
-    # 山元在庫グラフの設定（1日分表示、スクロールバー付き）
+    # 山元在庫グラフの設定(1日分表示、スクロールバー付き)
     fig.update_xaxes(
         title_text="時刻",
         row=3, col=1,
@@ -350,6 +351,70 @@ def plot_results(result_df):
     )
     
     return fig
+
+
+def create_cement_payment_table(result_df, demand_df):
+    """受払い表_セメントを作成する"""
+    # demand_dfのセメントデータのみ抽出
+    cement_demand = demand_df[demand_df["銘柄"].str.strip() == "セメント"].copy()
+    cement_demand["積出日付"] = pd.to_datetime(cement_demand["積出日付"])
+    cement_demand["date"] = cement_demand["積出日付"].dt.date
+    
+    # result_dfから日付ごとのデータを抽出
+    result_df_copy = result_df.copy()
+    result_df_copy["date"] = pd.to_datetime(result_df_copy["time"]).dt.date
+    
+    # 日付のリストを取得
+    dates = sorted(result_df_copy["date"].unique())
+    
+    payment_rows = []
+    
+    for date in dates:
+        # 朝6:00の在庫を取得
+        morning_6am = pd.Timestamp(date) + pd.Timedelta(hours=6)
+        morning_stock_row = result_df_copy[result_df_copy["time"] == morning_6am]
+        
+        if len(morning_stock_row) > 0:
+            morning_stock = morning_stock_row.iloc[0]["S_P_cement"]
+        else:
+            # 6:00のデータがない場合は、その日の最初のデータを使用
+            day_data = result_df_copy[result_df_copy["date"] == date]
+            if len(day_data) > 0:
+                morning_stock = day_data.iloc[0]["S_P_cement"]
+            else:
+                morning_stock = 0.0
+        
+        # LBC引取(その日のy_C_mの合計)
+        lbc_total = result_df_copy[result_df_copy["date"] == date]["y_C_m"].sum()
+        
+        # その日のセメント出荷データを取得
+        day_shipments = cement_demand[cement_demand["date"] == date].sort_values("積出日付")
+        
+        # 出荷量と開始時間を取得
+        shipment_1 = day_shipments.iloc[0]["数量"] if len(day_shipments) >= 1 else 0.0
+        time_1 = day_shipments.iloc[0]["積出日付"].strftime("%H:%M") if len(day_shipments) >= 1 else ""
+        
+        shipment_2 = day_shipments.iloc[1]["数量"] if len(day_shipments) >= 2 else 0.0
+        time_2 = day_shipments.iloc[1]["積出日付"].strftime("%H:%M") if len(day_shipments) >= 2 else ""
+        
+        # 計算
+        after_ship_1 = morning_stock - shipment_1 + lbc_total
+        after_ship_2 = morning_stock - shipment_1 - shipment_2 + lbc_total
+        
+        payment_rows.append({
+            "日付": str(date),
+            "朝在庫": morning_stock,
+            "LBC引取": lbc_total,
+            "出荷量1": shipment_1,
+            "開始時間1": time_1,
+            "朝在-出荷1": after_ship_1,
+            "出荷量2": shipment_2,
+            "開始時間2": time_2,
+            "朝在-出荷2": after_ship_2
+        })
+    
+    payment_df = pd.DataFrame(payment_rows)
+    return payment_df
 
 
 # メインアプリケーション
@@ -373,7 +438,7 @@ with col1:
         # パラメータ調整セクション
         st.divider()
         st.subheader("⚙️ パラメータ調整")
-        st.write("**EF坑からの産出比率（合計=1.0）**")
+        st.write("**EF坑からの産出比率(合計=1.0)**")
         
         # セッションステートの初期化
         if 'alpha_C' not in st.session_state:
@@ -434,7 +499,7 @@ with col1:
         total_alpha = alpha_C + alpha_S + alpha_I
         
         if abs(total_alpha - 1.0) > 0.001:
-            st.warning(f"⚠️ 合計値: {total_alpha:.3f} （合計は1.0である必要があります）")
+            st.warning(f"⚠️ 合計値: {total_alpha:.3f} (合計は1.0である必要があります)")
         else:
             st.success(f"✅ 合計値: {total_alpha:.3f}")
             st.session_state.alpha_C = alpha_C
@@ -484,7 +549,7 @@ with col1:
         total_wS = wS_cement + wS_agg2005 + wS_lump2040
         
         if total_wS > 0:
-            st.info(f"📊 合計: {total_wS:.3f} （正規化後に使用されます）")
+            st.info(f"📊 合計: {total_wS:.3f} (正規化後に使用されます)")
             st.session_state.wS_cement = wS_cement
             st.session_state.wS_agg2005 = wS_agg2005
             st.session_state.wS_lump2040 = wS_lump2040
@@ -572,7 +637,7 @@ with col1:
         total_wI = wI_cement + wI_lump6080 + wI_lump4060 + wI_lump2040 + wI_lump1030 + wI_agg2005 + wI_fines
         
         if total_wI > 0:
-            st.info(f"📊 合計: {total_wI:.3f} （正規化後に使用されます）")
+            st.info(f"📊 合計: {total_wI:.3f} (正規化後に使用されます)")
             st.session_state.wI_cement = wI_cement
             st.session_state.wI_lump6080 = wI_lump6080
             st.session_state.wI_lump4060 = wI_lump4060
@@ -622,7 +687,8 @@ with col1:
                             wI_raw
                         )
                         st.session_state['result_df'] = result_df
-                        st.session_state['original_result_df'] = result_df.copy()  # 元のデータを保存
+                        st.session_state['original_result_df'] = result_df.copy()
+                        st.session_state['demand_df'] = df.copy()  # demand_dfを保存
                         st.session_state['status'] = status
                         st.session_state['shortfall'] = shortfall
                         st.session_state['used_alpha_C'] = st.session_state.alpha_C
@@ -671,14 +737,187 @@ with col2:
             st.metric("総不足量", f"{st.session_state['shortfall']:.2f} t")
         
         # タブで結果を切り替え
-        tab1, tab2, tab3 = st.tabs(["📈 時系列グラフ", "📊 日別集計", "✏️ 稼働状態編集"])
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📋 LBC引取表", "⛏️ 立杭抜出計画", "✏️ 稼働状態編集", "📋 受払い表_セメント", "📦 山元在庫", "📊 日別集計"])
         
         with tab1:
-            # グラフ表示
-            fig = plot_results(st.session_state['result_df'])
-            st.plotly_chart(fig, use_container_width=True)
+            st.subheader("ベルト稼働状態")
+            # ベルト稼働状態グラフのみ表示
+            result_df_copy = st.session_state['result_df'].copy()
+            result_df_copy['C_working'] = (result_df_copy['y_C_m'] > 0).astype(int)
+            result_df_copy['S_working'] = (result_df_copy['y_S_m'] > 0).astype(int)
+            result_df_copy['I_working'] = (result_df_copy['y_I_m'] > 0).astype(int)
+            
+            start_time = result_df_copy["time"].min()
+            end_time = start_time + pd.Timedelta(hours=24)
+            
+            fig_belt = go.Figure()
+            
+            fig_belt.add_trace(
+                go.Bar(
+                    x=result_df_copy["time"], 
+                    y=result_df_copy['C_working'],
+                    name="セメントベルト稼働",
+                    marker_color='red',
+                    base=2,
+                    width=3600000,
+                    showlegend=True
+                )
+            )
+            
+            fig_belt.add_trace(
+                go.Bar(
+                    x=result_df_copy["time"], 
+                    y=result_df_copy['S_working'],
+                    name="砕石ベルト稼働",
+                    marker_color='orange',
+                    base=1,
+                    width=3600000,
+                    showlegend=True
+                )
+            )
+            
+            fig_belt.add_trace(
+                go.Bar(
+                    x=result_df_copy["time"], 
+                    y=result_df_copy['I_working'],
+                    name="鉄鋼ベルト稼働",
+                    marker_color='purple',
+                    base=0,
+                    width=3600000,
+                    showlegend=True
+                )
+            )
+            
+            fig_belt.update_xaxes(
+                title_text="時刻",
+                range=[start_time, end_time],
+                rangeslider=dict(visible=True, thickness=0.08),
+                type='date'
+            )
+            fig_belt.update_yaxes(
+                title_text="ベルト",
+                tickmode='array',
+                tickvals=[0.5, 1.5, 2.5],
+                ticktext=['鉄鋼', '砕石', 'セメント']
+            )
+            
+            fig_belt.update_layout(
+                height=600,
+                showlegend=True,
+                hovermode='x unified'
+            )
+            
+            st.plotly_chart(fig_belt, use_container_width=True)
         
         with tab2:
+            st.subheader("坑道稼働状態")
+            # 坑道稼働状態グラフのみ表示
+            result_df_copy = st.session_state['result_df'].copy()
+            result_df_copy['DG_working'] = (result_df_copy['x_DG'] > 0).astype(int)
+            result_df_copy['EF_working'] = (result_df_copy['x_EF'] > 0).astype(int)
+            
+            start_time = result_df_copy["time"].min()
+            end_time = start_time + pd.Timedelta(hours=24)
+            
+            fig_mine = go.Figure()
+            
+            fig_mine.add_trace(
+                go.Bar(
+                    x=result_df_copy["time"], 
+                    y=result_df_copy['DG_working'],
+                    name="DG坑稼働",
+                    marker_color='blue',
+                    base=1,
+                    width=3600000,
+                    showlegend=True
+                )
+            )
+            
+            fig_mine.add_trace(
+                go.Bar(
+                    x=result_df_copy["time"], 
+                    y=result_df_copy['EF_working'],
+                    name="EF坑稼働",
+                    marker_color='green',
+                    base=0,
+                    width=3600000,
+                    showlegend=True
+                )
+            )
+            
+            fig_mine.update_xaxes(
+                title_text="時刻",
+                range=[start_time, end_time],
+                rangeslider=dict(visible=True, thickness=0.08),
+                type='date'
+            )
+            fig_mine.update_yaxes(
+                title_text="坑道",
+                tickmode='array', 
+                tickvals=[0.5, 1.5],
+                ticktext=['EF坑', 'DG坑']
+            )
+            
+            fig_mine.update_layout(
+                height=600,
+                showlegend=True,
+                hovermode='x unified'
+            )
+            
+            st.plotly_chart(fig_mine, use_container_width=True)
+        
+        with tab5:
+            st.subheader("山元在庫 (セメント, 砕石, 鉄鋼)")
+            # 山元在庫グラフのみ表示
+            result_df_copy = st.session_state['result_df'].copy()
+            
+            start_time = result_df_copy["time"].min()
+            end_time = start_time + pd.Timedelta(hours=24)
+            
+            fig_stock = go.Figure()
+            
+            fig_stock.add_trace(
+                go.Scatter(
+                    x=result_df_copy["time"], 
+                    y=result_df_copy["S_Y_C_m"], 
+                    name="セメント在庫", 
+                    line=dict(color="darkred", width=2)
+                )
+            )
+            fig_stock.add_trace(
+                go.Scatter(
+                    x=result_df_copy["time"], 
+                    y=result_df_copy["S_Y_S_m"], 
+                    name="砕石在庫", 
+                    line=dict(color="darkorange", width=2)
+                )
+            )
+            fig_stock.add_trace(
+                go.Scatter(
+                    x=result_df_copy["time"], 
+                    y=result_df_copy["S_Y_I_m"], 
+                    name="鉄鋼在庫", 
+                    line=dict(color="darkviolet", width=2)
+                )
+            )
+            
+            fig_stock.update_xaxes(
+                title_text="時刻",
+                range=[start_time, end_time],
+                rangeslider=dict(visible=True, thickness=0.08),
+                type='date'
+            )
+            fig_stock.update_yaxes(title_text="在庫量 (t)")
+            
+            fig_stock.update_layout(
+                height=600,
+                showlegend=True,
+                hovermode='x unified'
+            )
+            
+            st.plotly_chart(fig_stock, use_container_width=True)
+        
+        with tab6:
             # 日別集計の計算
             result_df = st.session_state['result_df'].copy()
             result_df['date'] = result_df['time'].dt.date
@@ -932,6 +1171,41 @@ with col2:
             fig_preview.update_layout(height=800, showlegend=True)
             
             st.plotly_chart(fig_preview, use_container_width=True)
+        
+        with tab4:
+            st.subheader("📋 受払い表_セメント")
+            
+            if 'demand_df' in st.session_state:
+                # 受払い表の作成
+                payment_table = create_cement_payment_table(
+                    st.session_state['result_df'], 
+                    st.session_state['demand_df']
+                )
+                
+                # 表示
+                st.dataframe(
+                    payment_table.style.format({
+                        "朝在庫": "{:.2f}",
+                        "LBC引取": "{:.2f}",
+                        "出荷量1": "{:.2f}",
+                        "朝在-出荷1": "{:.2f}",
+                        "出荷量2": "{:.2f}",
+                        "朝在-出荷2": "{:.2f}"
+                    }),
+                    use_container_width=True,
+                    height=600
+                )
+                
+                # CSVダウンロード
+                csv_payment = payment_table.to_csv(index=False, encoding="utf-8")
+                st.download_button(
+                    label="📥 受払い表をCSVでダウンロード",
+                    data=csv_payment,
+                    file_name="cement_payment_table.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.warning("⚠️ demand.csvデータが見つかりません")
         
         # 結果データのダウンロード
         csv = st.session_state['result_df'].to_csv(index=False, encoding="utf-8")
