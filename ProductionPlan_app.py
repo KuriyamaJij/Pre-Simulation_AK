@@ -269,7 +269,7 @@ def create_agg2005_payment_table(result_df, demand_df, wS_raw, wI_raw):
         go5_shipment = day_shipments["数量"].sum() * 0.41 if len(day_shipments) > 0 else 0.0
         
         # 5号朝在庫-出荷
-        go5_balance = go5_morning_stock - go5_shipment
+        go5_balance = go5_morning_stock - go5_shipment + lbc_total * 0.41 + 316 
         
         # 6号朝在庫
         go6_morning_stock = morning_stock_agg2005 * 0.34
@@ -285,7 +285,7 @@ def create_agg2005_payment_table(result_df, demand_df, wS_raw, wI_raw):
         go6_shipment = day_shipments["数量"].sum() * 0.34 if len(day_shipments) > 0 else 0.0
         
         # 6号朝在庫-出荷
-        go6_balance = go6_morning_stock - go6_shipment
+        go6_balance = go6_morning_stock - go6_shipment + lbc_total * 0.34 + 262
         
         payment_rows.append({
             "日付": str(date),
